@@ -305,7 +305,88 @@ function $TransitionProvider() {
     Transition.prototype.ABORTED    = 3;
     Transition.prototype.INVALID    = 4;
 
+    function Resolvable(name, resolveFn) {
+      var self = this;
+      self.name = name;
+      self.resolveFn = resolveFn;
+      self.deps = $injector.annotate(resolveFn);
+
+      self.promise = undefined;
+      self.data = undefined;
+
+      // My idea is to put a deferred on each Resolvable function.  The defer gets resolved when the resolveFn is
+      // invoked and thus the resolve's promise is ready to be used.
+
+      // This is to allow Resolvables to be invoked later, during a transition to grandchildren states, per our
+      // discussion in #2 and https://github.com/angular-ui/ui-router/issues/702
+      // " a resolve should never be loaded unless it's depended on by an injectable function"
+      // Unless we do static analysis, we'll have to allow the resolveFn invoke to be deferred.
+      // Is this what you were thinking, or were you thinking along the lines of static analysis?
+
+      // states:
+      // "A".resolve: { foo: fn()...}
+      // "A.B".resolve: { }
+      // "A.B.C".resolve: { bar: fn(foo)...}
+
+      // from root, $state.go("A.B.C")  resolves 'foo', then resolves 'bar', with foo dependency injected
+
+      // from root, $state.go("A.B")  does not resolve 'foo' because it's not injected in "A" or "A.B".
+      // From "A.B", $state.go("A.B.C") must now resolve 'foo' after-the-fact for state "A" in order to resolve 'bar'
+
+      // in 0.2.11, 'foo' is resolved when you transition to "A".
+
+      var invokeDefer = $q.defer();
+      self.invokePromise = invokeDefer.promise;
+
+      // resolve is called from transition
+      // ancestorResolvables is an array of Resolvables
+      function resolve(ancestorResolvables) {
+        // "index" all ancestor Resolvables by their names.
+        // if two states have the same resolve name, last-one-in-wins, so the ordering of the Resolvables array matters
+        var ancestorsByName = indexBy(ancestorResolvables, 'name');
+        // Limit the ancestors Resolvables map to only those that the current Resolvable fn's annotations depends on
+        var depResolvables = pick(ancestorsByName, self.deps);
+
+        // Invoke any dependency resolveFn that haven't yet been invoked.  We check this by looking for the .promise attr
+        forEach(depResolvables, function(resolvable) {
+          // TODO: Oops, I don't have access the ancestor resolve's correct list of ancestor resolvables
+          // since I said the caller of resolve() has to pass in the proper ancestors.
+          // I might have to add that to the contract of Resolvable()
+          if (resolvable.promise === undefined) resolvable.resolve(ancestorResolvables);
+        });
+
+        // Make an assoc array of the invoke Promises to be $q.all'd
+        var depResolvablesInvokePromises = map(ancestorsByName, function(ancestor) {
+          return ancestor.invokePromise;
+        });
+
+        // Make sure all the dependencies from ancestors have been invoked so we have access to their promises,
+        // then invoke our current resolveFn, passing in the ancestors' resolved data
+        $q.all(depResolvablesInvokePromises).then(function invokeAncestorsResolves() {
+          return $q.all(map(depResolvables, function(resolvable, name) {
+            return resolvable.promise;
+          }));
+        }).then(function invokeResolve(locals) {
+          var state = undefined; // TODO: need to access state here for 'this' in invoke() call
+          self.promise = $injector.invoke(self.resolveFn, state, locals);
+          self.invokeDefer.resolve(self.promise);
+        });
+      }
+      this.resolve = resolve;
+    }
+
+    // An element in the path which represents a state and its resolve status
+    // When the resolved data is ready, it is stored here in the PathElement on the Resolvable(s) objects
+    function PathElement(state) {
+      this.state = state;
+      var resolvables = map(state.resolve || {}, function(resolveFn, resolveName) {
+        return new Resolvable(resolveName, resolveFn);
+      });
+    }
+
     function Path(states) {
+      // states contains public or private state?
+      var elements = map(states, function (state) { return new PathElement(state); });
 
       function invoke(hook, self, locals) {
         if (!hook) return;
@@ -364,6 +445,9 @@ function $TransitionProvider() {
             // states[i].locals = null;
           }
           return true;
+        },
+        resolve: function resolvePath(locals) {
+          // start resolving elements
         }
       });
     }
