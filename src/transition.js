@@ -305,17 +305,16 @@ function $TransitionProvider() {
     Transition.prototype.ABORTED    = 3;
     Transition.prototype.INVALID    = 4;
 
-    function Resolvable(name, resolveFn) {
+    function Resolvable(name, resolveFn, state, ancestorResolvables) {
       var self = this;
       self.name = name;
       self.resolveFn = resolveFn;
+      self.state = state;
+      self.ancestorResolvables = ancestorResolvables;
       self.deps = $injector.annotate(resolveFn);
 
       self.promise = undefined;
       self.data = undefined;
-
-      // My idea is to put a deferred on each Resolvable function.  The defer gets resolved when the resolveFn is
-      // invoked and thus the resolve's promise is ready to be used.
 
       // This is to allow Resolvables to be invoked later, during a transition to grandchildren states, per our
       // discussion in #2 and https://github.com/angular-ui/ui-router/issues/702
@@ -333,14 +332,15 @@ function $TransitionProvider() {
       // from root, $state.go("A.B")  does not resolve 'foo' because it's not injected in "A" or "A.B".
       // From "A.B", $state.go("A.B.C") must now resolve 'foo' after-the-fact for state "A" in order to resolve 'bar'
 
-      // in 0.2.11, 'foo' is resolved when you transition to "A".
+      // in 0.2.11, 'foo' is resolved immediately when you transition to "A".
 
-      var invokeDefer = $q.defer();
-      self.invokePromise = invokeDefer.promise;
+      self.get = function() {
+        return self.promise || resolve();
+      };
 
       // resolve is called from transition
       // ancestorResolvables is an array of Resolvables
-      function resolve(ancestorResolvables) {
+      function resolve() {
         // "index" all ancestor Resolvables by their names.
         // if two states have the same resolve name, last-one-in-wins, so the ordering of the Resolvables array matters
         var ancestorsByName = indexBy(ancestorResolvables, 'name');
@@ -356,43 +356,42 @@ function $TransitionProvider() {
         });
 
         // Make an assoc array of the invoke Promises to be $q.all'd
-        var depResolvablesInvokePromises = map(ancestorsByName, function(ancestor) {
-          return ancestor.invokePromise;
+        var depPromises = map(ancestorsByName, function(ancestor) {
+          return ancestor.get();
         });
 
         // Make sure all the dependencies from ancestors have been invoked so we have access to their promises,
         // then invoke our current resolveFn, passing in the ancestors' resolved data
-        $q.all(depResolvablesInvokePromises).then(function invokeAncestorsResolves() {
-          return $q.all(map(depResolvables, function(resolvable, name) {
-            return resolvable.promise;
-          }));
-        }).then(function invokeResolve(locals) {
-          var state = undefined; // TODO: need to access state here for 'this' in invoke() call
+        return $q.all(depPromises).then(function invokeResolve(locals) {
           self.promise = $injector.invoke(self.resolveFn, state, locals);
-          self.invokeDefer.resolve(self.promise);
         });
       }
-      this.resolve = resolve;
     }
 
     // An element in the path which represents a state and its resolve status
     // When the resolved data is ready, it is stored here in the PathElement on the Resolvable(s) objects
-    function PathElement(state) {
+    function PathElement(state, ancestorResolvables) {
       this.state = state;
       var resolvables = map(state.resolve || {}, function(resolveFn, resolveName) {
-        return new Resolvable(resolveName, resolveFn);
+        return new Resolvable(resolveName, resolveFn, state, ancestorResolvables);
       });
     }
 
     function Path(states) {
       // states contains public or private state?
-      var elements = map(states, function (state) { return new PathElement(state); });
+      var elements = map(states, function (state) {
+        return new PathElement(state);
+      });
 
       function invoke(hook, self, locals) {
         if (!hook) return;
         return $injector.invoke(hook, self, locals);
       }
 
+      function resolvePath() {
+
+      }
+      this.resolvePath = resolvePath;
                                                   /* resolved, locals */
       function resolveState(state, params, filtered, inherited, dst) {
         var locals = { $stateParams: (filtered) ? params : $stateParams.$localize(state, params) };
