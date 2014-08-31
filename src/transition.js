@@ -305,12 +305,11 @@ function $TransitionProvider() {
     Transition.prototype.ABORTED    = 3;
     Transition.prototype.INVALID    = 4;
 
-    function Resolvable(name, resolveFn, state, ancestorResolvables) {
+    function Resolvable(name, resolveFn, state) {
       var self = this;
       self.name = name;
       self.resolveFn = resolveFn;
       self.state = state;
-      self.ancestorResolvables = ancestorResolvables;
       self.deps = $injector.annotate(resolveFn);
 
       self.promise = undefined;
@@ -334,13 +333,14 @@ function $TransitionProvider() {
 
       // in 0.2.11, 'foo' is resolved immediately when you transition to "A".
 
-      self.get = function() {
-        return self.promise || resolve();
+      self.get = function(pathContext) {
+        return self.promise || resolve(pathContext);
       };
 
       // resolve is called from transition
       // ancestorResolvables is an array of Resolvables
-      function resolve() {
+      function resolve(pathContext) {
+        var ancestorResolvables = pathContext.getInjectableResolvables(self.state);
         // "index" all ancestor Resolvables by their names.
         // if two states have the same resolve name, last-one-in-wins, so the ordering of the Resolvables array matters
         var ancestorsByName = indexBy(ancestorResolvables, 'name');
@@ -349,15 +349,13 @@ function $TransitionProvider() {
 
         // Invoke any dependency resolveFn that haven't yet been invoked.  We check this by looking for the .promise attr
         forEach(depResolvables, function(resolvable) {
-          // TODO: Oops, I don't have access the ancestor resolve's correct list of ancestor resolvables
-          // since I said the caller of resolve() has to pass in the proper ancestors.
-          // I might have to add that to the contract of Resolvable()
-          if (resolvable.promise === undefined) resolvable.resolve(ancestorResolvables);
+          if (resolvable.promise === undefined)
+            resolvable.resolve(pathContext);
         });
 
         // Make an assoc array of the invoke Promises to be $q.all'd
         var depPromises = map(ancestorsByName, function(ancestor) {
-          return ancestor.get();
+          return ancestor.get(pathContext);
         });
 
         // Make sure all the dependencies from ancestors have been invoked so we have access to their promises,
@@ -370,11 +368,20 @@ function $TransitionProvider() {
 
     // An element in the path which represents a state and its resolve status
     // When the resolved data is ready, it is stored here in the PathElement on the Resolvable(s) objects
-    function PathElement(state, ancestorResolvables) {
+    function PathElement(state) {
       this.state = state;
       var resolvables = map(state.resolve || {}, function(resolveFn, resolveName) {
-        return new Resolvable(resolveName, resolveFn, state, ancestorResolvables);
+        return new Resolvable(resolveName, resolveFn, state);
       });
+      this.resolvables = function() { return resolvables; };
+      this.state = function() { return state; };
+
+      function resolveElement(pathContext) {
+        forEach(resolvables, function(resolvable) {
+          resolvable.resolve(pathContext);
+        });
+      }
+      this.resolveElement = resolveElement;
     }
 
     function Path(states) {
@@ -382,52 +389,19 @@ function $TransitionProvider() {
       var elements = map(states, function (state) {
         return new PathElement(state);
       });
+      this.elements = function() { return elements; };
+
+      // pathContext will hold stateful Resolvables (containing possibly resolved data), mapped per state-name.
+      function resolvePath(pathContext) {
+        forEach(elements, function(elem) {
+          elem.resolveElement(pathContext);
+        });
+      }
+      this.resolvePath = resolvePath;
 
       function invoke(hook, self, locals) {
         if (!hook) return;
         return $injector.invoke(hook, self, locals);
-      }
-
-      function resolvePath() {
-
-      }
-      this.resolvePath = resolvePath;
-                                                  /* resolved, locals */
-      function resolveState(state, params, filtered, inherited, dst) {
-        var locals = { $stateParams: (filtered) ? params : $stateParams.$localize(state, params) };
-
-        // Resolve 'global' dependencies for the state, i.e. those not specific to a view.
-        // We're also including $stateParams in this; that way the parameters are restricted
-        // to the set that should be visible to the state, and are independent of when we update
-        // the global $state and $stateParams values.
-        dst.resolve = $resolve.resolve(state.resolve, locals, dst.resolve, state);
-
-        var promises = [dst.resolve.then(function (globals) {
-          dst.globals = globals;
-        })];
-
-        if (inherited) promises.push(inherited);
-
-        // Resolve template and dependencies for all views.
-        forEach(state.views, function (view, name) {
-          var injectables = (view.resolve && view.resolve !== state.resolve ? view.resolve : {});
-
-          promises.push($view.load(name, extend({}, view, {
-            locals: extend({}, locals, injectables),
-            params: locals.$stateParams,
-            context: state,
-            parent: (name.indexOf(".") > -1 || state.parent === root) ? null : state.parent
-          })));
-
-          promises.push($resolve.resolve(injectables, locals, dst.resolve, state).then(function (result) {
-            dst[name] = result;
-          }));
-        });
-
-        // Wait for all the promises and then return the activation object
-        return $q.all(promises).then(function (values) {
-          return dst;
-        });
       }
 
       extend(this, {
@@ -449,6 +423,59 @@ function $TransitionProvider() {
           // start resolving elements
         }
       });
+
+      var PathContext = function(parentPath) {
+        var resolvables = {};
+        var previous = [];
+
+        forEach(parentPath.elements(), function(pathElem) {
+          var resolvables = resolvables.resolvables();
+          resolvables[pathElem.state().name] = previous.concat(resolvables);
+        });
+
+        this.getInjectableResolvable = function(stateName) {
+          return resolvables[stateName];
+        };
+      };
+
+
+      /* resolved, locals */
+//      function resolveState(state, params, filtered, inherited, dst) {
+//        var locals = { $stateParams: (filtered) ? params : $stateParams.$localize(state, params) };
+//
+//        // Resolve 'global' dependencies for the state, i.e. those not specific to a view.
+//        // We're also including $stateParams in this; that way the parameters are restricted
+//        // to the set that should be visible to the state, and are independent of when we update
+//        // the global $state and $stateParams values.
+//        dst.resolve = $resolve.resolve(state.resolve, locals, dst.resolve, state);
+//
+//        var promises = [dst.resolve.then(function (globals) {
+//          dst.globals = globals;
+//        })];
+//
+//        if (inherited) promises.push(inherited);
+//
+//        // Resolve template and dependencies for all views.
+//        forEach(state.views, function (view, name) {
+//          var injectables = (view.resolve && view.resolve !== state.resolve ? view.resolve : {});
+//
+//          promises.push($view.load(name, extend({}, view, {
+//            locals: extend({}, locals, injectables),
+//            params: locals.$stateParams,
+//            context: state,
+//            parent: (name.indexOf(".") > -1 || state.parent === root) ? null : state.parent
+//          })));
+//
+//          promises.push($resolve.resolve(injectables, locals, dst.resolve, state).then(function (result) {
+//            dst[name] = result;
+//          }));
+//        });
+//
+//        // Wait for all the promises and then return the activation object
+//        return $q.all(promises).then(function (values) {
+//          return dst;
+//        });
+//      }
     }
 
     $transition.init = function init(state, params, matcher) {
