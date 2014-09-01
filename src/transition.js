@@ -1,3 +1,5 @@
+// temporary to write specs for internals
+var Path;
 
 
 /**
@@ -308,15 +310,16 @@ function $TransitionProvider() {
     // An element in the path which represents a state and its resolve status
     // When the resolved data is ready, it is stored here in the PathElement on the Resolvable(s) objects
     function PathElement(state) {
-      this.state = state;
       var resolvables = map(state.resolve || {}, function(resolveFn, resolveName) {
         return new Resolvable(resolveName, resolveFn, state);
       });
       this.resolvables = function() { return resolvables; };
+      this.$$resolvables = resolvables;
+      this.$$state = state;
       this.state = function() { return state; };
 
       function resolveElement(pathContext) {
-        forEach(resolvables, function(resolvable) {
+        forEach(resolvables, function fe_resolvable(resolvable) {
           resolvable.resolve(pathContext);
         });
       }
@@ -324,19 +327,21 @@ function $TransitionProvider() {
     }
 
     function Path(states) {
+      var self = this;
       // states contains public or private state?
       var elements = map(states, function (state) {
         return new PathElement(state);
       });
-      this.elements = function() { return elements; };
+      self.elements = function() { return elements; };
+      self.$$elements = elements; // for development
 
       // pathContext will hold stateful Resolvables (containing possibly resolved data), mapped per state-name.
       function resolvePath(pathContext) {
-        forEach(elements, function(elem) {
+        forEach(elements, function fe_element(elem) {
           elem.resolveElement(pathContext);
         });
       }
-      this.resolvePath = resolvePath;
+      self.resolvePath = resolvePath;
 
       function invoke(hook, self, locals) {
         if (!hook) return;
@@ -358,8 +363,8 @@ function $TransitionProvider() {
           }
           return true;
         },
-        resolve: function resolvePath(locals) {
-          // start resolving elements
+        resolve: function resolvePath(pathContext) {
+          return self.resolvePath(pathContext);
         }
       });
 
@@ -415,7 +420,7 @@ function $TransitionProvider() {
       });
 
       this.getResolvableLocals = function(stateName) {
-        return resolvables[stateName];
+        return resolvablesByState[stateName];
       };
     };
 
@@ -471,7 +476,13 @@ function $TransitionProvider() {
           self.promise = $injector.invoke(self.resolveFn, state, locals);
         });
       }
+      this.resolve = resolve;
     }
+
+    $transition.Path = Path;
+    $transition.PathElement = PathElement;
+    $transition.PathContext = PathContext;
+    $transition.Resolvable = Resolvable;
 
     $transition.init = function init(state, params, matcher) {
       from = { state: state, params: params };
