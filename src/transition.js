@@ -305,67 +305,6 @@ function $TransitionProvider() {
     Transition.prototype.ABORTED    = 3;
     Transition.prototype.INVALID    = 4;
 
-    function Resolvable(name, resolveFn, state) {
-      var self = this;
-      self.name = name;
-      self.resolveFn = resolveFn;
-      self.state = state;
-      self.deps = $injector.annotate(resolveFn);
-
-      self.promise = undefined;
-      self.data = undefined;
-
-      // This is to allow Resolvables to be invoked later, during a transition to grandchildren states, per our
-      // discussion in #2 and https://github.com/angular-ui/ui-router/issues/702
-      // " a resolve should never be loaded unless it's depended on by an injectable function"
-      // Unless we do static analysis, we'll have to allow the resolveFn invoke to be deferred.
-      // Is this what you were thinking, or were you thinking along the lines of static analysis?
-
-      // states:
-      // "A".resolve: { foo: fn()...}
-      // "A.B".resolve: { }
-      // "A.B.C".resolve: { bar: fn(foo)...}
-
-      // from root, $state.go("A.B.C")  resolves 'foo', then resolves 'bar', with foo dependency injected
-
-      // from root, $state.go("A.B")  does not resolve 'foo' because it's not injected in "A" or "A.B".
-      // From "A.B", $state.go("A.B.C") must now resolve 'foo' after-the-fact for state "A" in order to resolve 'bar'
-
-      // in 0.2.11, 'foo' is resolved immediately when you transition to "A".
-
-      self.get = function(pathContext) {
-        return self.promise || resolve(pathContext);
-      };
-
-      // resolve is called from transition
-      // ancestorResolvables is an array of Resolvables
-      function resolve(pathContext) {
-        var ancestorResolvables = pathContext.getInjectableResolvables(self.state);
-        // "index" all ancestor Resolvables by their names.
-        // if two states have the same resolve name, last-one-in-wins, so the ordering of the Resolvables array matters
-        var ancestorsByName = indexBy(ancestorResolvables, 'name');
-        // Limit the ancestors Resolvables map to only those that the current Resolvable fn's annotations depends on
-        var depResolvables = pick(ancestorsByName, self.deps);
-
-        // Invoke any dependency resolveFn that haven't yet been invoked.  We check this by looking for the .promise attr
-        forEach(depResolvables, function(resolvable) {
-          if (resolvable.promise === undefined)
-            resolvable.resolve(pathContext);
-        });
-
-        // Make an assoc array of the invoke Promises to be $q.all'd
-        var depPromises = map(ancestorsByName, function(ancestor) {
-          return ancestor.get(pathContext);
-        });
-
-        // Make sure all the dependencies from ancestors have been invoked so we have access to their promises,
-        // then invoke our current resolveFn, passing in the ancestors' resolved data
-        return $q.all(depPromises).then(function invokeResolve(locals) {
-          self.promise = $injector.invoke(self.resolveFn, state, locals);
-        });
-      }
-    }
-
     // An element in the path which represents a state and its resolve status
     // When the resolved data is ready, it is stored here in the PathElement on the Resolvable(s) objects
     function PathElement(state) {
@@ -424,19 +363,6 @@ function $TransitionProvider() {
         }
       });
 
-      var PathContext = function(parentPath) {
-        var resolvables = {};
-        var previous = [];
-
-        forEach(parentPath.elements(), function(pathElem) {
-          var resolvables = resolvables.resolvables();
-          resolvables[pathElem.state().name] = previous.concat(resolvables);
-        });
-
-        this.getInjectableResolvable = function(stateName) {
-          return resolvables[stateName];
-        };
-      };
 
 
       /* resolved, locals */
@@ -476,6 +402,75 @@ function $TransitionProvider() {
 //          return dst;
 //        });
 //      }
+    }
+
+    var PathContext = function(parentPath) {
+      var resolvablesByState = {};
+
+      var previousIteration = {};
+      forEach(parentPath.elements(), function(pathElem) {
+        var resolvesbyName = indexBy(pathElem.resolvables(), 'name');
+        var resolvables = extend({}, previousIteration, resolvesbyName);
+        previousIteration = resolvablesByState[pathElem.state().name] = resolvables;
+      });
+
+      this.getResolvableLocals = function(stateName) {
+        return resolvables[stateName];
+      };
+    };
+
+    function Resolvable(name, resolveFn, state) {
+      var self = this;
+      self.name = name;
+      self.resolveFn = resolveFn;
+      self.state = state;
+      self.deps = $injector.annotate(resolveFn);
+
+      self.promise = undefined;
+      self.data = undefined;
+
+      // This is to allow Resolvables to be invoked later, during a transition to grandchildren states, per our
+      // discussion in #2 and https://github.com/angular-ui/ui-router/issues/702
+      // " a resolve should never be loaded unless it's depended on by an injectable function"
+      // Unless we do static analysis, we'll have to allow the resolveFn invoke to be deferred.
+      // Is this what you were thinking, or were you thinking along the lines of static analysis?
+
+      // states:
+      // "A".resolve: { foo: fn()...}
+      // "A.B".resolve: { }
+      // "A.B.C".resolve: { bar: fn(foo)...}
+
+      // from root, $state.go("A.B.C")  resolves 'foo', then resolves 'bar', with foo dependency injected
+
+      // from root, $state.go("A.B")  does not resolve 'foo' because it's not injected in "A" or "A.B".
+      // From "A.B", $state.go("A.B.C") must now resolve 'foo' after-the-fact for state "A" in order to resolve 'bar'
+
+      // in 0.2.11, 'foo' is resolved immediately when you transition to "A".
+
+      self.get = function(pathContext) {
+        return self.promise || resolve(pathContext);
+      };
+
+      // resolve is called from transition
+      // ancestorResolvables is an array of Resolvables
+      function resolve(pathContext) {
+        // Load an assoc-array of all resolvables for this state from the pathContext
+        var ancestorsByName = pathContext.getResolvableLocals(self.state.name);
+
+        // Limit the ancestors Resolvables map to only those that the current Resolvable fn's annotations depends on
+        var depResolvables = pick(ancestorsByName, self.deps);
+
+        // Get promises (or invoke resolveFn) for deps
+        var depPromises = map(depResolvables, function(resolvable) {
+          return resolvable.get(pathContext);
+        });
+
+        // Make sure all the dependencies from ancestors have been invoked so we have access to their promises,
+        // then invoke our current resolveFn, passing in the ancestors' resolved data
+        return $q.all(depPromises).then(function invokeResolve(locals) {
+          self.promise = $injector.invoke(self.resolveFn, state, locals);
+        });
+      }
     }
 
     $transition.init = function init(state, params, matcher) {
