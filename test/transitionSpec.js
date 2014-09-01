@@ -1,13 +1,12 @@
-describe('state', function () {
+describe('transition', function () {
+//  var stateProvider, transitionProvider, locationProvider, templateParams, ctrlName;
+//  var Path;
 
-  var stateProvider, transitionProvider, locationProvider, templateParams, ctrlName;
-  var Path;
-
-  beforeEach(module('ui.router', function($locationProvider) {
-    // This isn't getting invoked.   ???
-    locationProvider = $locationProvider;
-    $locationProvider.html5Mode(false);
-  }));
+//  beforeEach(module('ui.router', function($locationProvider) {
+//    // This isn't getting invoked.   ???
+//    locationProvider = $locationProvider;
+//    $locationProvider.html5Mode(false);
+//  }));
 
   var states;
   beforeEach(function() {
@@ -44,28 +43,27 @@ describe('state', function () {
     };
   });
 
-  beforeEach(module('ui.router',  function($transitionProvider, $locationProvider) {
-    locationProvider = $locationProvider;
-    transitionProvider = $transitionProvider;
-    Path = transitionProvider.Path;
-    $locationProvider.html5Mode(false);
-  }));
+//  beforeEach(module('ui.router',  function($transitionProvider, $locationProvider) {
+//    locationProvider = $locationProvider;
+//    transitionProvider = $transitionProvider;
+//    Path = transitionProvider.Path;
+//    $locationProvider.html5Mode(false);
+//  }));
 
-  beforeEach(module(function ($stateProvider, $provide) {
-    console.log("------------------------->", transitionProvider);
-    angular.forEach(states, function(state) {
-      $stateProvider.state(state);
-    });
-  }));
+//  beforeEach(module(function ($stateProvider, $provide) {
+//    console.log("------------------------->", transitionProvider);
+//    angular.forEach(states, function(state) {
+//      $stateProvider.state(state);
+//    });
+//  }));
 
-
-  describe('Path.resolve()', inject(function($transition) {
-    it('should resolve on-demand', function() {
+  describe('Path.resolve()', function() {
+    it('should resolve on-demand', inject(function($transition) {
       var Path = $transition.Path;
       var PathContext = $transition.PathContext;
       console.log(Path, PathContext);
       var path = new Path([ states[''], states['home'], states['home.about'], states['home.about.people'] ]);
       path.resolve(new PathContext(new Path([])));
-    });
-  }));
+    }));
+  });
 });
