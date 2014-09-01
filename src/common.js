@@ -160,12 +160,12 @@ function indexBy(array, propName) {
 // Return a copy of the object only containing the whitelisted properties.
 function pick(obj) {
   var copy = {};
-  var keys = concat.apply(ArrayProto, slice.call(arguments, 1));
-  each(keys, function(key) {
+  var keys = Array.prototype.concat.apply(Array.prototype, Array.prototype.slice.call(arguments, 1));
+  forEach(keys, function(key) {
     if (key in obj) copy[key] = obj[key];
   });
   return copy;
-};
+}
 
 /**
  * @ngdoc overview
