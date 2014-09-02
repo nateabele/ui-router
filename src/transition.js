@@ -1,5 +1,3 @@
-// temporary to write specs for internals
-var Path;
 
 
 /**
@@ -315,20 +313,20 @@ function $TransitionProvider() {
         return new Resolvable(resolveName, resolveFn, state);
       });
 
-      function resolve(pathContext) {
-        return $q.all(map(resolvables, function(resolvable) { return resolvable.get(pathContext); }));
+      function resolvePathElement(resolveContext) {
+        return $q.all(map(resolvables, function(resolvable) { return resolvable.get(resolveContext); }));
       }
 
       // Injects a function at this PathElement level with available Resolvables
       // First it resolves all resolvables.  When they are done resolving, invokes the function.
       // Returns a promise which returns the return value of the function.
-      function invokeLater(fn, locals, pathContext) {
+      function invokeLater(fn, locals, resolveContext) {
         var deps = $injector.annotate(fn);
-        var resolvables = pick(pathContext.getResolvableLocals(self.$$state.name), deps);
-        var promises = map(resolvables, function(resolvable) { return resolvable.get(pathContext); });
+        var resolvables = pick(resolveContext.getResolvableLocals(self.$$state.name), deps);
+        var promises = map(resolvables, function(resolvable) { return resolvable.get(resolveContext); });
         return $q.all(promises).then(function() {
           try {
-            return self.invokeNow(fn, locals, pathContext);
+            return self.invokeNow(fn, locals, resolveContext);
           } catch (error) {
             return $q.reject(error);
           }
@@ -337,8 +335,8 @@ function $TransitionProvider() {
 
       // Injects a function at this PathElement level with available Resolvables
       // Does not wait until all Resolvables have been resolved; call PathElement.resolve() first
-      function invokeNow(fn, locals, pathContext) {
-        var resolvables = pathContext.getResolvableLocals(self.$$state.name);
+      function invokeNow(fn, locals, resolveContext) {
+        var resolvables = resolveContext.getResolvableLocals(self.$$state.name);
         var moreLocals = map(resolvables, function(resolvable) { return resolvable.data; });
         var combinedLocals = extend({}, locals, moreLocals);
         return $injector.invoke(fn, self.$$state, combinedLocals);
@@ -349,7 +347,7 @@ function $TransitionProvider() {
         $$state: state,
         resolvables: function() { return resolvables; },
         $$resolvables: resolvables,
-        resolve: resolve,
+        resolve: resolvePathElement,
         invokeNow: invokeNow,
         invokeLater: invokeLater
       });
@@ -362,9 +360,9 @@ function $TransitionProvider() {
         return new PathElement(state);
       });
 
-      // pathContext will hold stateful Resolvables (containing possibly resolved data), mapped per state-name.
-      function resolvePath(pathContext) {
-        return $q.all(map(elements, function(element) { return element.resolve(pathContext); }));
+      // resolveContext will hold stateful Resolvables (containing possibly resolved data), mapped per state-name.
+      function resolvePath(resolveContext) {
+        return $q.all(map(elements, function(element) { return element.resolve(resolveContext); }));
       }
 
       function invoke(hook, self, locals) {
@@ -373,8 +371,8 @@ function $TransitionProvider() {
       }
 
       extend(this, {
-        $$elements: elements, // for development at least
         resolve: resolvePath,
+        $$elements: elements, // for development at least
         elements: function() {
           return elements;
         },
@@ -398,7 +396,7 @@ function $TransitionProvider() {
       });
     }
 
-    var PathContext = function(parentPath, currentPath) {
+    var ResolveContext = function(parentPath, currentPath) {
       var resolvablesByState = {};
       var previousIteration = {};
       function registerPath(path) {
@@ -421,41 +419,25 @@ function $TransitionProvider() {
 
     function Resolvable(name, resolveFn, state) {
       var self = this;
-      // This setup is to allow Resolvables to be invoked on-demand, (eg: during a transition to grandchildren
-      // states, per our) discussion in #2 and https://github.com/angular-ui/ui-router/issues/702
-      //     " a resolve should never be loaded unless it's depended on by an injectable function"
-      // Unless we do static analysis, we'll have to allow the resolveFn invoke to be deferred.
-      // Is this what you were thinking, or were you thinking along the lines of static analysis?
-
-      // states:
-      // "A".resolve: { foo: fn()...}
-      // "A.B".resolve: { }
-      // "A.B.C".resolve: { bar: fn(foo)...}
-
-      // from root, $state.go("A.B.C")  resolves 'foo', then resolves 'bar', with foo dependency injected
-
-      // from root, $state.go("A.B")  does not resolve 'foo' because it's not injected in "A" or "A.B".
-      // From "A.B", $state.go("A.B.C") must now resolve 'foo' after-the-fact for state "A" in order to resolve 'bar'
-
-      // in 0.2.11, 'foo' is resolved immediately when you transition to "A".
-
       // resolve is likely called from transitionTo()
-      function resolveResolvable(pathContext) {
-        // Load an assoc-array of all resolvables for this state from the pathContext
-        var ancestorsByName = pathContext.getResolvableLocals(self.state.name);
+      function resolveResolvable(resolveContext) {
+        // Load an assoc-array of all resolvables for this state from the resolveContext
+        var ancestorsByName = resolveContext.getResolvableLocals(self.state.name);
 
         // Limit the ancestors Resolvables map to only those that the current Resolvable fn's annotations depends on
         var depResolvables = pick(ancestorsByName, self.deps);
 
         // Get promises (or invoke resolveFn) for deps
         var depPromises = map(depResolvables, function(resolvable) {
-          return resolvable.get(pathContext);
+          return resolvable.get(resolveContext);
         });
 
         // Make sure all the dependencies from ancestors have been invoked so we have access to their promises,
         // then invoke our current resolveFn, passing in the ancestors' resolved data
         return $q.all(depPromises).then(function invokeResolve(locals) {
-          self.promise = $injector.invoke(self.resolveFn, state, locals);
+          var result = $injector.invoke(self.resolveFn, state, locals);
+          var isPromise = result && result.then && angular.isFunction(result.then) || false;
+          self.promise = (isPromise ? result : $q.when(result));
           return self.promise;
         }).then(function(data) {
           self.data = data;
@@ -471,8 +453,8 @@ function $TransitionProvider() {
         resolve: resolveResolvable,
         promise: undefined,
         data: undefined,
-        get: function(pathContext) {
-          return self.promise || resolve(pathContext);
+        get: function(resolveContext) {
+          return self.promise || resolveResolvable(resolveContext);
         }
       });
     }
@@ -482,7 +464,7 @@ function $TransitionProvider() {
     // Do we need to expose this API level for any reason other than testing?
     $transition.Path = Path;
     $transition.PathElement = PathElement;
-    $transition.PathContext = PathContext;
+    $transition.ResolveContext = ResolveContext;
     $transition.Resolvable = Resolvable;
 
     $transition.init = function init(state, params, matcher) {

@@ -1,12 +1,12 @@
 describe('transition', function () {
   var states;
-  var Resolvable, Path, PathElement, PathContext;
+  var Resolvable, Path, PathElement, ResolveContext;
   var emptyPath;
   beforeEach(inject(function($transition) {
     Resolvable = $transition.Resolvable;
     Path = $transition.Path;
     PathElement = $transition.PathElement;
-    PathContext = $transition.PathContext;
+    ResolveContext = $transition.ResolveContext;
     emptyPath = new Path([]);
   }));
 
@@ -50,8 +50,8 @@ describe('transition', function () {
   describe('PathElement.resolve()', function() {
     it('should resolve all resolves in a PathElement', inject(function($q) {
       var path = new Path([ states[''], states['home'], states['home.about'], states['home.about.people'] ]);
-      var pathContext = new PathContext(emptyPath, path);
-      var promise = path.elements()[3].resolve(pathContext);
+      var resolveContext = new ResolveContext(emptyPath, path);
+      var promise = path.elements()[3].resolve(resolveContext);
       promise.then(function(data) {
         expect(path.$$elements[1].$$resolvables['foo']).toBeDefined();
         expect(path.$$elements[1].$$resolvables['foo'].data).toBeUndefined();
@@ -66,7 +66,7 @@ describe('transition', function () {
   describe('Path.resolve()', function() {
     it('should resolve all resolves in a Path', inject(function($q) {
       var path = new Path([ states[''], states['home'], states['home.about'], states['home.about.people'] ]);
-      var promise = path.resolve(new PathContext(emptyPath, path));
+      var promise = path.resolve(new ResolveContext(emptyPath, path));
       promise.then(function(data) {
         expect(path.$$elements[1].$$resolvables['foo'].data).toBe("foo");
         expect(path.$$elements[2].$$resolvables['bar'].data).toBe("bar");
@@ -81,7 +81,7 @@ describe('transition', function () {
     it('should resolve Resolvable and its deps', inject(function($q) {
       var path = new Path([ states[''], states['home'], states['home.about'], states['home.about.people'] ]);
       var path2 = new Path([ states['home.about.people.person'] ]);
-      var promise = path2.resolve(new PathContext(path, path2));
+      var promise = path2.resolve(new ResolveContext(path, path2));
 
       promise.then(function(data) {
         expect(path2.$$elements[0].$$resolvables['qux'].data).toBe("foobarbazqux");
@@ -95,7 +95,7 @@ describe('transition', function () {
     it('should resolve only the required deps, then inject fn', inject(function($q) {
       var path = new Path([ states[''], states['home'], states['home.about'], states['home.about.people'], states['home.about.people.person'] ]);
       var peopleElement = path.elements()[3];
-      var context = new PathContext(emptyPath, path);
+      var context = new ResolveContext(emptyPath, path);
 
       var result;
       var onEnter = function(baz) {
@@ -119,7 +119,7 @@ describe('transition', function () {
     it('should fail if invoked on the wrong path element', inject(function($q) {
       var path = new Path([ states[''], states['home'], states['home.about'], states['home.about.people'], states['home.about.people.person'] ]);
       var peopleElement = path.elements()[3];
-      var context = new PathContext(emptyPath, path);
+      var context = new ResolveContext(emptyPath, path);
       var quxOnEnter = function(qux) { quxResult = qux; };
       var quxPromise = peopleElement.invokeLater(quxOnEnter, {}, context);
 
@@ -136,7 +136,7 @@ describe('transition', function () {
   describe('Resolvables', function() {
     it('should load deps on-demand', inject(function($q) {
       var path = new Path([ states[''], states['home'], states['home.about'], states['home.about.people'], states['home.about.people.person'] ]);
-      var context = new PathContext(emptyPath, path);
+      var context = new ResolveContext(emptyPath, path);
 
       var bazResult;
       var bazOnEnter = function(baz) { bazResult = baz; };
