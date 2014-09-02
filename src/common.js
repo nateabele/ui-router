@@ -154,6 +154,7 @@ function indexBy(array, propName) {
   forEach(array, function(item) {
     result[item[propName]] = item;
   });
+  return result;
 }
 
 // extracted from underscore.js 1.6.0

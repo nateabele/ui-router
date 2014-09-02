@@ -310,18 +310,49 @@ function $TransitionProvider() {
     // An element in the path which represents a state and its resolve status
     // When the resolved data is ready, it is stored here in the PathElement on the Resolvable(s) objects
     function PathElement(state) {
+      var self = this;
       var resolvables = map(state.resolve || {}, function(resolveFn, resolveName) {
         return new Resolvable(resolveName, resolveFn, state);
       });
-      this.resolvables = function() { return resolvables; };
-      this.$$resolvables = resolvables;
-      this.$$state = state;
-      this.state = function() { return state; };
 
-      function resolveElement(pathContext) {
+      function resolve(pathContext) {
         return $q.all(map(resolvables, function(resolvable) { return resolvable.get(pathContext); }));
       }
-      this.resolveElement = resolveElement;
+
+      // Injects a function at this PathElement level with available Resolvables
+      // First it resolves all resolvables.  When they are done resolving, invokes the function.
+      // Returns a promise which returns the return value of the function.
+      function invokeLater(fn, locals, pathContext) {
+        var deps = $injector.annotate(fn);
+        var resolvables = pick(pathContext.getResolvableLocals(self.$$state.name), deps);
+        var promises = map(resolvables, function(resolvable) { return resolvable.get(pathContext); });
+        return $q.all(promises).then(function() {
+          try {
+            return self.invokeNow(fn, locals, pathContext);
+          } catch (error) {
+            return $q.reject(error);
+          }
+        });
+      }
+
+      // Injects a function at this PathElement level with available Resolvables
+      // Does not wait until all Resolvables have been resolved; call PathElement.resolve() first
+      function invokeNow(fn, locals, pathContext) {
+        var resolvables = pathContext.getResolvableLocals(self.$$state.name);
+        var moreLocals = map(resolvables, function(resolvable) { return resolvable.data; });
+        var combinedLocals = extend({}, locals, moreLocals);
+        return $injector.invoke(fn, self.$$state, combinedLocals);
+      }
+
+      extend(this, {
+        state: function() { return state; },
+        $$state: state,
+        resolvables: function() { return resolvables; },
+        $$resolvables: resolvables,
+        resolve: resolve,
+        invokeNow: invokeNow,
+        invokeLater: invokeLater
+      });
     }
 
     function Path(states) {
@@ -330,14 +361,11 @@ function $TransitionProvider() {
       var elements = map(states, function (state) {
         return new PathElement(state);
       });
-      self.elements = function() { return elements; };
-      self.$$elements = elements; // for development
 
       // pathContext will hold stateful Resolvables (containing possibly resolved data), mapped per state-name.
       function resolvePath(pathContext) {
-        return $q.all(map(elements, function(element) { return element.resolveElement(pathContext); }));
+        return $q.all(map(elements, function(element) { return element.resolve(pathContext); }));
       }
-      self.resolvePath = resolvePath;
 
       function invoke(hook, self, locals) {
         if (!hook) return;
@@ -345,7 +373,14 @@ function $TransitionProvider() {
       }
 
       extend(this, {
+        $$elements: elements, // for development at least
+        resolve: resolvePath,
+        elements: function() {
+          return elements;
+        },
         $$enter: function(/* locals */) {
+          // TODO: Replace with PathElement.invoke(Now|Later)
+          // TODO: If invokeNow (synchronous) then we have to .get() all Resolvables for all functions first.
           for (var i = 0; i < states.length; i++) {
             // entering.locals = toLocals[i];
             if (invoke(states[i].self.onEnter, states[i].self, locals(states[i])) === false) return false;
@@ -353,86 +388,42 @@ function $TransitionProvider() {
           return true;
         },
         $$exit: function(/* locals */) {
+          // TODO: Replace with PathElement.invoke(Now|Later)
           for (var i = states.length - 1; i >= 0; i--) {
             if (invoke(states[i].self.onExit, states[i].self, locals(states[i])) === false) return false;
             // states[i].locals = null;
           }
           return true;
-        },
-        resolve: function resolvePath(pathContext) {
-          return self.resolvePath(pathContext);
         }
       });
-
-
-
-      /* resolved, locals */
-//      function resolveState(state, params, filtered, inherited, dst) {
-//        var locals = { $stateParams: (filtered) ? params : $stateParams.$localize(state, params) };
-//
-//        // Resolve 'global' dependencies for the state, i.e. those not specific to a view.
-//        // We're also including $stateParams in this; that way the parameters are restricted
-//        // to the set that should be visible to the state, and are independent of when we update
-//        // the global $state and $stateParams values.
-//        dst.resolve = $resolve.resolve(state.resolve, locals, dst.resolve, state);
-//
-//        var promises = [dst.resolve.then(function (globals) {
-//          dst.globals = globals;
-//        })];
-//
-//        if (inherited) promises.push(inherited);
-//
-//        // Resolve template and dependencies for all views.
-//        forEach(state.views, function (view, name) {
-//          var injectables = (view.resolve && view.resolve !== state.resolve ? view.resolve : {});
-//
-//          promises.push($view.load(name, extend({}, view, {
-//            locals: extend({}, locals, injectables),
-//            params: locals.$stateParams,
-//            context: state,
-//            parent: (name.indexOf(".") > -1 || state.parent === root) ? null : state.parent
-//          })));
-//
-//          promises.push($resolve.resolve(injectables, locals, dst.resolve, state).then(function (result) {
-//            dst[name] = result;
-//          }));
-//        });
-//
-//        // Wait for all the promises and then return the activation object
-//        return $q.all(promises).then(function (values) {
-//          return dst;
-//        });
-//      }
     }
 
-    var PathContext = function(parentPath) {
+    var PathContext = function(parentPath, currentPath) {
       var resolvablesByState = {};
-
       var previousIteration = {};
-      forEach(parentPath.elements(), function(pathElem) {
-        var resolvesbyName = indexBy(pathElem.resolvables(), 'name');
-        var resolvables = extend({}, previousIteration, resolvesbyName);
-        previousIteration = resolvablesByState[pathElem.state().name] = resolvables;
-      });
+      function registerPath(path) {
+        forEach(path.elements(), function (pathElem) {
+          var resolvesbyName = indexBy(pathElem.resolvables(), 'name');
+          var resolvables = extend({}, previousIteration, resolvesbyName);
+          previousIteration = resolvablesByState[pathElem.state().name] = resolvables;
+        });
+      }
+      registerPath(parentPath);
+      registerPath(currentPath);
 
-      this.getResolvableLocals = function(stateName) {
-        return resolvablesByState[stateName];
-      };
+      extend(this, {
+        getResolvableLocals: function(stateName) {
+          return resolvablesByState[stateName] || {};
+        },
+        $$resolvablesByState: resolvablesByState
+      });
     };
 
     function Resolvable(name, resolveFn, state) {
       var self = this;
-      self.name = name;
-      self.resolveFn = resolveFn;
-      self.state = state;
-      self.deps = $injector.annotate(resolveFn);
-
-      self.promise = undefined;
-      self.data = undefined;
-
-      // This is to allow Resolvables to be invoked later, during a transition to grandchildren states, per our
-      // discussion in #2 and https://github.com/angular-ui/ui-router/issues/702
-      // " a resolve should never be loaded unless it's depended on by an injectable function"
+      // This setup is to allow Resolvables to be invoked on-demand, (eg: during a transition to grandchildren
+      // states, per our) discussion in #2 and https://github.com/angular-ui/ui-router/issues/702
+      //     " a resolve should never be loaded unless it's depended on by an injectable function"
       // Unless we do static analysis, we'll have to allow the resolveFn invoke to be deferred.
       // Is this what you were thinking, or were you thinking along the lines of static analysis?
 
@@ -448,13 +439,8 @@ function $TransitionProvider() {
 
       // in 0.2.11, 'foo' is resolved immediately when you transition to "A".
 
-      self.get = function(pathContext) {
-        return self.promise || resolve(pathContext);
-      };
-
-      // resolve is called from transition
-      // ancestorResolvables is an array of Resolvables
-      function resolve(pathContext) {
+      // resolve is likely called from transitionTo()
+      function resolveResolvable(pathContext) {
         // Load an assoc-array of all resolvables for this state from the pathContext
         var ancestorsByName = pathContext.getResolvableLocals(self.state.name);
 
@@ -476,9 +462,24 @@ function $TransitionProvider() {
           return self.promise;
         });
       }
-      this.resolve = resolve;
+
+      extend(this, {
+        name: name,
+        resolveFn: resolveFn,
+        state: state,
+        deps: $injector.annotate(resolveFn),
+        resolve: resolveResolvable,
+        promise: undefined,
+        data: undefined,
+        get: function(pathContext) {
+          return self.promise || resolve(pathContext);
+        }
+      });
     }
 
+    // Expose for unit testing... not sure how we want this stuff structured
+    // Does this stuff remain only under $transition?
+    // Do we need to expose this API level for any reason other than testing?
     $transition.Path = Path;
     $transition.PathElement = PathElement;
     $transition.PathContext = PathContext;
