@@ -157,7 +157,7 @@ function indexBy(array, propName) {
   return result;
 }
 
-// extracted from underscore.js 1.6.0
+// extracted from underscore.js
 // Return a copy of the object only containing the whitelisted properties.
 function pick(obj) {
   var copy = {};
@@ -166,6 +166,35 @@ function pick(obj) {
     if (key in obj) copy[key] = obj[key];
   });
   return copy;
+}
+
+// extracted from underscore.js
+// Return a copy of the object omitting the blacklisted properties.
+function omit(obj) {
+  var copy = {};
+  var keys = Array.prototype.concat.apply(Array.prototype, Array.prototype.slice.call(arguments, 1));
+  for (var key in obj) {
+    if (keys.indexOf(key) == -1) copy[key] = obj[key];
+  }
+  return copy;
+}
+
+function pluck(collection, key) {
+  var result = isArray(collection) ? [] : {};
+
+  forEach(collection, function(val, i) {
+    result[i] = isFunction(key) ? key(val) : val[key];
+  });
+  return result;
+}
+
+function map(collection, callback) {
+  var result = isArray(collection) ? [] : {};
+
+  forEach(collection, function(val, i) {
+    result[i] = callback(val, i);
+  });
+  return result;
 }
 
 /**
