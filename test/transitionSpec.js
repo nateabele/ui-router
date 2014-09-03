@@ -2,6 +2,7 @@ describe('transition', function () {
   var statesTree, statesMap = {};
   var Resolvable, Path, PathElement, ResolveContext;
   var emptyPath;
+  var counts;
 
   beforeEach(inject(function ($transition) {
     Resolvable = $transition.Resolvable;
@@ -12,28 +13,26 @@ describe('transition', function () {
   }));
 
   beforeEach(function () {
+    counts = { _J: 0, _J2: 0, _K: 0, _L: 0, _M: 0};
     states = {
-      A: {
-        resolve: { _A: function () { return "A"; }, _A2: function() { return "A2"; }},
-        B: {
-          resolve: { _B: function () { return "B"; }, _B2: function() { return "B2"; }},
-          C: {
-            resolve: { _C: function (_A, _B) { return _A + _B + "C"; }, _C2: function() { return "C2"; }},
-            D: {
-              resolve: { _D: function (_D2) { return "D1" + _D2; }, _D2: function () { return "D2"; }}
-            }
+      A: { resolve: { _A: function () { return "A"; }, _A2: function() { return "A2"; }},
+        B: { resolve: { _B: function () { return "B"; }, _B2: function() { return "B2"; }},
+          C: { resolve: { _C: function (_A, _B) { return _A + _B + "C"; }, _C2: function() { return "C2"; }},
+            D: { resolve: { _D: function (_D2) { return "D1" + _D2; }, _D2: function () { return "D2"; }} }
           }
         },
-        E: {
-          resolve: { _E: function() { return "E"; } },
-          F: {
-            resolve: { _E: function() { return "_E"; }, _F: function(_E) { return _E + "F"; }}
-          }
+        E: { resolve: { _E: function() { return "E"; } },
+          F: { resolve: { _E: function() { return "_E"; }, _F: function(_E) { return _E + "F"; }} }
         },
-        G: {
-          resolve: { _G: function() { return "G"; } },
-          H: {
-            resolve: { _G: function(_G) { return _G + "_G"; }, _H: function(_G) { return _G + "H"; } }
+        G: { resolve: { _G: function() { return "G"; } },
+          H: { resolve: { _G: function(_G) { return _G + "_G"; }, _H: function(_G) { return _G + "H"; } } }
+        },
+        I: { resolve: { _I: function(_I) { return "I"; } } }
+      },
+      J: { resolve: { _J: function() { counts['_J']++; return "J"; }, _J2: function(_J) { counts['_J2']++; return _J + "J2"; } },
+        K: { resolve: { _K: function(_J2) { counts['_K']++; return _J2 + "K"; }},
+          L: { resolve: { _L: function(_K) { counts['_L']++; return _K + "L"; }},
+            M: { resolve: { _M: function(_L) { counts['_M']++; return _L + "M"; }} }
           }
         }
       }
@@ -97,7 +96,7 @@ describe('transition', function () {
     it('should return Resolvables from itself and all parents', inject(function ($q) {
       var path = makePath([ "A", "B", "C" ]);
       var resolveContext = new ResolveContext(emptyPath, path);
-      var resolvableLocals = resolveContext.getResolvableLocals("C");
+      var resolvableLocals = resolveContext.getResolvableLocals("C", { flatten: true } );
       var keys = Object.keys(resolvableLocals).sort();
       expect(keys).toEqual( ["_A", "_A2", "_B", "_B2", "_C", "_C2" ] );
     }));
@@ -196,10 +195,7 @@ describe('transition', function () {
       var cPathElement = path.elements()[2];
       var context = new ResolveContext(emptyPath, path);
 
-      var cOnEnter = function (_D) {
-
-      };
-
+      var cOnEnter = function (_D) {  };
       var caught;
       var promise = cPathElement.invokeLater(cOnEnter, {}, context);
       promise.catch(function (err) {
@@ -210,6 +206,7 @@ describe('transition', function () {
       expect(caught.message).toContain("Unknown provider: _DProvider");
     }));
   });
+
 
   describe('Resolvables', function () {
     it('should inject same-name deps from parent', inject(function ($q) {
@@ -254,24 +251,128 @@ describe('transition', function () {
     }));
   });
 
-  // TODO: This test failing.
-  xdescribe('Resolvables', function () {
+  describe('Resolvables', function () {
     it('should inject same-name deps from parent PathElement', inject(function ($q) {
       var path = makePath([ "A", "G", "H" ]);
-      var hPathElement = path.elements()[2];
       var context = new ResolveContext(emptyPath, path);
+
+      var resolvable_G = path.elements()[2].$$resolvables._G;
+      var promise = resolvable_G.get(context);
+      promise.then(function (data) {
+        expect(data).toBe("G_G");
+      });
+      $q.flush();
 
       var result;
       var hOnEnter = function (_H) {
         result = _H;
       };
 
-      var promise = hPathElement.invokeLater(hOnEnter, {}, context);
-      promise.then(function () {
+      var hPathElement = path.elements()[2];
+      promise = hPathElement.invokeLater(hOnEnter, {}, context);
+      promise.then(function (data) {
         expect(result).toBe("G_GH");
       });
 
       $q.flush();
     }));
   });
+
+  describe('Resolvables', function () {
+    it('should fail to inject same-name deps to self', inject(function ($q) {
+      var path = makePath([ "A", "I" ]);
+      var context = new ResolveContext(emptyPath, path);
+
+      var iPathElement = path.elements()[1];
+      var iOnEnter = function (_I) {  };
+      var caught;
+      var promise = iPathElement.invokeLater(iOnEnter, {}, context);
+      promise.catch(function (err) {
+        caught = err;
+      });
+
+      $q.flush();
+      expect(caught.message).toContain("[$injector:unpr] Unknown provider: _IProvider ");
+    }));
+  });
+
+  describe('Resolvables', function () {
+    it('should not re-resolve', inject(function ($q) {
+      var path = makePath([ "J", "K" ]);
+      var context = new ResolveContext(emptyPath, path);
+
+      var kPathElement = path.elements()[1];
+      var result;
+      function checkCounts() {
+        expect(result).toBe("JJ2K");
+        expect(counts['_J']).toBe(1);
+        expect(counts['_J2']).toBe(1);
+        expect(counts['_K']).toBe(1);
+      }
+      var promise = kPathElement.invokeLater(function(_K) { result = _K; }, {}, context);
+      promise.then(checkCounts);
+      $q.flush();
+
+      // invoke again
+      promise = kPathElement.invokeLater(function(_K) { result = _K; }, {}, context);
+      promise.then(checkCounts);
+      $q.flush();
+    }));
+  });
+
+  describe('PathContext', function () {
+    it('from previous resolve should be', inject(function ($q) {
+      var path = makePath([ "J", "K" ]);
+
+      expect(counts["_J"]).toBe(0);
+      expect(counts["_J2"]).toBe(0);
+      path.resolve(new ResolveContext(emptyPath, path)).then(function () {
+        expect(counts["_J"]).toBe(1);
+        expect(counts["_J2"]).toBe(1);
+        expect(counts["_K"]).toBe(1);
+      });
+      $q.flush();
+
+      var path2 = makePath([ "L", "M" ]);
+      path2.resolve(new ResolveContext(path, path2)).then(function () {
+        expect(counts["_J"]).toBe(1);
+        expect(counts["_J2"]).toBe(1);
+        expect(counts["_K"]).toBe(1);
+        expect(counts["_L"]).toBe(1);
+        expect(counts["_M"]).toBe(1);
+      });
+      $q.flush();
+    }));
+  });
+
+  describe('Path.slice()', function () {
+    it('should create a partial path from an original path', inject(function ($q) {
+      var path = makePath([ "J", "K", "L" ]);
+      path.resolve(new ResolveContext(emptyPath, path)).then(function () {
+        expect(counts["_J"]).toBe(1);
+        expect(counts["_J2"]).toBe(1);
+        expect(counts["_K"]).toBe(1);
+        expect(counts["_L"]).toBe(1);
+      });
+      $q.flush();
+
+      var slicedPath = path.slice(0, 2);
+      expect(slicedPath.elements().length).toBe(2);
+      expect(slicedPath.elements()[1]).toBe(path.elements()[1]);
+      var path2 = makePath([ "L", "M" ]);
+      path2.resolve(new ResolveContext(slicedPath, path2)).then(function () {
+        expect(counts["_J"]).toBe(1);
+        expect(counts["_J2"]).toBe(1);
+        expect(counts["_K"]).toBe(1);
+        expect(counts["_L"]).toBe(2);
+        expect(counts["_M"]).toBe(1);
+      });
+      $q.flush();
+    }));
+  });
+
+  // TODO: test injection of services as well
+  // TODO: test injection of locals as well
+  // TODO: Implement and test injection to onEnter/Exit
+  // TODO: Implement and test injection into controllers
 });

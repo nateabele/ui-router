@@ -197,6 +197,19 @@ function map(collection, callback) {
   return result;
 }
 
+function flattenPrototypeChain(obj) {
+  var objs = [];
+  do {
+    objs.push(obj);
+  } while (obj = Object.getPrototypeOf(obj));
+  objs.reverse();
+
+  var result = {};
+  forEach(objs, function(obj) {
+    extend(result, obj);
+  });
+  return result;
+}
 /**
  * @ngdoc overview
  * @name ui.router.util

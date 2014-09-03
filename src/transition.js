@@ -301,7 +301,7 @@ function $TransitionProvider() {
 
       // Injects a function at this PathElement level with available Resolvables
       // First it resolves all resolvables.  When they are done resolving, invokes the function.
-      // Returns a promise which returns the return value of the function.
+      // Returns a promise for the return value of the function.
       function invokeLater(fn, locals, resolveContext) {
         var deps = $injector.annotate(fn);
         var resolvables = pick(resolveContext.getResolvableLocals(self.$$state.name), deps);
@@ -335,12 +335,17 @@ function $TransitionProvider() {
       });
     }
 
-    function Path(states) {
+    // statesOrPathElements must be an array of either state(s) or PathElement(s)
+    // states should be "private" state objects
+    function Path(statesOrPathElements) {
       var self = this;
-      // states contains public or private state?
-      var elements = map(states, function (state) {
-        return new PathElement(state);
-      });
+      if (!isArray(statesOrPathElements)) throw new Error("states must be an array of state(s) or PathElement(s)", statesOrPathElements);
+      var isPathElementArray = (statesOrPathElements.length && (statesOrPathElements[0] instanceof PathElement));
+
+      var elements = statesOrPathElements;
+      if (!isPathElementArray) { // they passed in states; convert to PathElements
+        elements = map(elements, function (state) { return new PathElement(state); });
+      }
 
       // resolveContext will hold stateful Resolvables (containing possibly resolved data), mapped per state-name.
       function resolvePath(resolveContext) {
@@ -355,6 +360,12 @@ function $TransitionProvider() {
       extend(this, {
         resolve: resolvePath,
         $$elements: elements, // for development at least
+        concat: function(path) {
+          return new Path(elements.concat(path.elements()));
+        },
+        slice: function(start, end) {
+          return new Path(elements.slice(start, end));
+        },
         elements: function() {
           return elements;
         },
@@ -379,22 +390,61 @@ function $TransitionProvider() {
     }
 
     var ResolveContext = function(parentPath, currentPath) {
-      var resolvablesByState = {};
-      var previousIteration = {};
-      function registerPath(path) {
-        forEach(path.elements(), function (pathElem) {
-          var resolvesbyName = indexBy(pathElem.resolvables(), 'name');
-          var resolvables = extend({}, previousIteration, resolvesbyName);
-          previousIteration = resolvablesByState[pathElem.state().name] = resolvables;
-        });
-      }
+      var resolvablesByState = {}, previousIteration = {};
+
       registerPath(parentPath);
       registerPath(currentPath);
 
+      function registerPath(path) {
+        forEach(path.elements(), function (pathElem) {
+          var resolvesbyName = indexBy(pathElem.resolvables(), 'name');
+          var resolvables = inherit(previousIteration, resolvesbyName); // note prototypal inheritance
+          previousIteration = resolvablesByState[pathElem.state().name] = resolvables;
+        });
+      }
+
+      function getResolvableLocals(stateName, options) {
+        var resolvables = (resolvablesByState[stateName] || {});
+        options = extend({ flatten: true, omitPropsFromPrototype: [] }, options);
+
+        // Create a shallow clone referencing the original prototype chain.  This is so we can alter the clone's
+        // prototype without affecting the actual object (for options.omitPropsFromPrototype)
+        var shallowClone = Object.create(Object.getPrototypeOf(resolvables));
+        for (property in resolvables) {
+          if (resolvables.hasOwnProperty(property)) { shallowClone[property] = resolvables[property]; }
+        }
+
+        // options.omitPropsFromPrototype
+        // Remove the props specified in options.omitPropsFromPrototype from the prototype of the object.
+
+        // This hides a top-level resolvable by name, potentially exposing a parent resolvable of the same name
+        // further down the prototype chain.
+
+        // This is used to provide a Resolvable access to all other Resolvables in its same PathElement, yet disallow
+        // that Resolvable access to its own injectable Resolvable reference.
+
+        // This is also used to allow a state to override a parent state's resolve while also injecting
+        // that parent state's resolve:
+
+        // state({ name: 'G', resolve: { _G: function() { return "G"; } } });
+        // state({ name: 'G.G2', resolve: { _G: function(_G) { return _G + "G2"; } } });
+        // where injecting _G into a controller will yield "GG2"
+        forEach(options.omitPropsFromPrototype, function(prop) {
+          delete(shallowClone[prop]); // possibly exposes the same prop from prototype chain
+        });
+
+        // options.flatten
+        // $$resolvablesByState has resolvables organized in a prototypal inheritance chain.  options.flatten will
+        // flatten the object from prototypal inheritance to a simple object with all its parent properties exposed
+        // with child properties taking precedence over parent properties.
+        if (options.flatten)
+          shallowClone = flattenPrototypeChain(shallowClone);
+
+        return shallowClone;
+      }
+
       extend(this, {
-        getResolvableLocals: function(stateName) {
-          return resolvablesByState[stateName] || {};
-        },
+        getResolvableLocals: getResolvableLocals,
         $$resolvablesByState: resolvablesByState
       });
     };
@@ -403,8 +453,13 @@ function $TransitionProvider() {
       var self = this;
       // resolve is likely called from transitionTo()
       function resolveResolvable(resolveContext) {
+        // First, set up an overall deferred/promise for this Resolvable
+        var deferred = $q.defer();
+        self.promise = deferred.promise;
+
         // Load an assoc-array of all resolvables for this state from the resolveContext
-        var ancestorsByName = resolveContext.getResolvableLocals(self.state.name);
+        var options = {  omitPropsFromPrototype: [ self.name ], flatten: true };
+        var ancestorsByName = resolveContext.getResolvableLocals(self.state.name, options);
 
         // Limit the ancestors Resolvables map to only those that the current Resolvable fn's annotations depends on
         var depResolvables = pick(ancestorsByName, self.deps);
@@ -417,14 +472,17 @@ function $TransitionProvider() {
         // Make sure all the dependencies from ancestors have been invoked so we have access to their promises,
         // then invoke our current resolveFn, passing in the ancestors' resolved data
         return $q.all(depPromises).then(function invokeResolve(locals) {
-          var result = $injector.invoke(self.resolveFn, state, locals);
-          var isPromise = result && result.then && angular.isFunction(result.then) || false;
-          self.promise = (isPromise ? result : $q.when(result));
+          try {
+            var result = $injector.invoke(self.resolveFn, state, locals);
+            deferred.resolve(result);
+          } catch (error) {
+            deferred.reject(error);
+          }
           return self.promise;
         }).then(function(data) {
           self.data = data;
           return self.promise;
-        });
+        })
       }
 
       extend(this, {
